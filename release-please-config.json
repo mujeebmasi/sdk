@@ -1,14 +1,17 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
-    ".": {
-      "release-type": "simple",
-      "exclude-paths": ["packages/postgrest-typegen"]
+    "packages/capability-matrix": {
+      "release-type": "node",
+      "package-name": "@supabase/capability-matrix-validator",
+      "component": "capability-matrix",
+      "release-as": "1.6.0"
     },
     "packages/postgrest-typegen": {
       "release-type": "node",
       "package-name": "@supabase/postgrest-typegen",
-      "bump-minor-pre-major": true
+      "bump-minor-pre-major": true,
+      "release-as": "0.1.0"
     }
   }
 }
