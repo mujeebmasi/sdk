@@ -232,6 +232,8 @@ export const generateTypescript = async (
         view: {
           ...materializedView,
           is_updatable: false,
+          is_insert_enabled: false,
+          is_update_enabled: false,
         },
         relationships: getRelationships(materializedView),
       });
@@ -547,7 +549,13 @@ export const generateTypescript = async (
   ) => {
     return fns
       .map(({ fn, inArgs }) => {
-        let argsType = "never";
+        // `never` would be wrong here: postgrest-js treats `Args extends { '': Row }`
+        // as a computed field (`never extends T` is always true, so same-named table
+        // columns get omitted from select results), and an object type with a required
+        // `never` property is uninhabited for any tool doing sound type math on the
+        // generated types. `Record<PropertyKey, never>` is the accurate type for
+        // "callable with no arguments".
+        let argsType = "Record<PropertyKey, never>";
         let returnType = getFunctionReturnType(schema, fn);
 
         // Check for specific error cases
@@ -637,6 +645,11 @@ export const generateTypescript = async (
     : "";
 
   function generateNullableUnionTsType(tsType: string, isNullable: boolean) {
+    // The generated Json type includes null, so a NOT NULL json/jsonb column
+    // has to be narrowed with NonNullable to reflect the database constraint.
+    if (tsType === "Json" && !isNullable) {
+      return `NonNullable<${tsType}>`;
+    }
     // Only add the null union if the type is not unknown as unknown already includes null
     if (tsType === "unknown" || tsType === "any" || !isNullable) {
       return tsType;
@@ -716,7 +729,10 @@ export type Database = {
                   }
                   Insert: {
                     ${columnsByTableId[table.id].map((column) => {
-                      if (column.identity_generation === "ALWAYS") {
+                      if (
+                        column.identity_generation === "ALWAYS" ||
+                        column.is_generated
+                      ) {
                         return `${JSON.stringify(column.name)}?: never`;
                       }
                       return generateColumnTsDefinition(
@@ -737,7 +753,10 @@ export type Database = {
                   }
                   Update: {
                     ${columnsByTableId[table.id].map((column) => {
-                      if (column.identity_generation === "ALWAYS") {
+                      if (
+                        column.identity_generation === "ALWAYS" ||
+                        column.is_generated
+                      ) {
                         return `${JSON.stringify(column.name)}?: never`;
                       }
 
@@ -797,7 +816,7 @@ export type Database = {
                     ]}
                   }
                   ${
-                    view.is_updatable
+                    view.is_insert_enabled
                       ? `Insert: {
                            ${columnsByTableId[view.id].map((column) => {
                              if (!column.is_updatable) {
@@ -816,7 +835,11 @@ export type Database = {
                              );
                            })}
                          }
-                         Update: {
+                        `
+                      : ""
+                  }${
+                    view.is_update_enabled
+                      ? `Update: {
                            ${columnsByTableId[view.id].map((column) => {
                              if (!column.is_updatable) {
                                return `${JSON.stringify(column.name)}?: never`;

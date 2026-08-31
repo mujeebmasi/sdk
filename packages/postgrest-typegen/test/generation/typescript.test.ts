@@ -7,7 +7,9 @@ import {
   baseFunction,
   baseRelationship,
   baseTable,
+  baseView,
   buildMetadata,
+  int4Type,
   userStatusEnum,
 } from "./fixtures.ts";
 
@@ -17,6 +19,12 @@ const generateTypescript = (
   metadata: Parameters<typeof rawGenerateTypescript>[0],
   opts?: Parameters<typeof rawGenerateTypescript>[1],
 ) => rawGenerateTypescript(sortGeneratorMetadata(metadata), opts);
+
+// The generated output ends with a long, fix-independent tail (helper types
+// and Constants). Tests that only assert on the Database type snapshot this
+// leading section to keep the inline snapshots focused.
+const databaseSection = (result: string) =>
+  result.slice(0, result.indexOf("\ntype DatabaseWithoutInternals"));
 
 describe("typescript typegen", () => {
   test("table Row/Insert/Update with enum, identity ALWAYS, default and nullable", async () => {
@@ -230,6 +238,148 @@ describe("typescript typegen", () => {
           },
         },
       } as const
+      "
+    `);
+  });
+
+  test("omits stored generated columns from Insert and Update", async () => {
+    // Ported from supabase/postgres-meta#1105: `GENERATED ALWAYS AS … STORED`
+    // columns are not writable, so they stay on Row but become `?: never` on
+    // Insert and Update, matching identity ALWAYS columns.
+    const result = await generateTypescript(
+      buildMetadata({
+        tables: [baseTable()],
+        columns: [
+          baseColumn({
+            name: "height_cm",
+            format: "numeric",
+            is_nullable: true,
+            ordinal_position: 1,
+          }),
+          baseColumn({
+            name: "height_in",
+            format: "numeric",
+            is_nullable: true,
+            is_generated: true,
+            is_updatable: false,
+            ordinal_position: 2,
+          }),
+        ],
+      }),
+    );
+
+    expect(databaseSection(result)).toMatchInlineSnapshot(`
+      "export type Json =
+        | string
+        | number
+        | boolean
+        | null
+        | { [key: string]: Json | undefined }
+        | Json[]
+
+      export type Database = {
+        public: {
+          Tables: {
+            tickets: {
+              Row: {
+                height_cm: number | null
+                height_in: number | null
+              }
+              Insert: {
+                height_cm?: number | null
+                height_in?: never
+              }
+              Update: {
+                height_cm?: number | null
+                height_in?: never
+              }
+              Relationships: []
+            }
+          }
+          Views: {
+            [_ in never]: never
+          }
+          Functions: {
+            [_ in never]: never
+          }
+          Enums: {
+            user_status: "ACTIVE" | "INACTIVE"
+          }
+          CompositeTypes: {
+            [_ in never]: never
+          }
+        }
+      }
+      "
+    `);
+  });
+
+  test("narrows a non-nullable json column to NonNullable<Json>", async () => {
+    // Ported from supabase/postgres-meta#1085: the generated Json type itself
+    // includes null, so a NOT NULL json/jsonb column must be narrowed with
+    // NonNullable to reflect the database constraint. Nullable json columns
+    // keep the plain `Json | null` union.
+    const result = await generateTypescript(
+      buildMetadata({
+        tables: [baseTable()],
+        columns: [
+          baseColumn({
+            name: "required_metadata",
+            format: "jsonb",
+            ordinal_position: 1,
+          }),
+          baseColumn({
+            name: "optional_metadata",
+            format: "jsonb",
+            is_nullable: true,
+            ordinal_position: 2,
+          }),
+        ],
+      }),
+    );
+
+    expect(databaseSection(result)).toMatchInlineSnapshot(`
+      "export type Json =
+        | string
+        | number
+        | boolean
+        | null
+        | { [key: string]: Json | undefined }
+        | Json[]
+
+      export type Database = {
+        public: {
+          Tables: {
+            tickets: {
+              Row: {
+                optional_metadata: Json | null
+                required_metadata: NonNullable<Json>
+              }
+              Insert: {
+                optional_metadata?: Json | null
+                required_metadata: NonNullable<Json>
+              }
+              Update: {
+                optional_metadata?: Json | null
+                required_metadata?: NonNullable<Json>
+              }
+              Relationships: []
+            }
+          }
+          Views: {
+            [_ in never]: never
+          }
+          Functions: {
+            [_ in never]: never
+          }
+          Enums: {
+            user_status: "ACTIVE" | "INACTIVE"
+          }
+          CompositeTypes: {
+            [_ in never]: never
+          }
+        }
+      }
       "
     `);
   });
@@ -847,19 +997,7 @@ describe("typescript typegen", () => {
             return_type: "integer",
           }),
         ],
-        types: [
-          userStatusEnum,
-          {
-            id: 23,
-            name: "int4",
-            schema: "pg_catalog",
-            format: "int4",
-            enums: [],
-            attributes: [],
-            comment: null,
-            type_relation_id: null,
-          },
-        ],
+        types: [userStatusEnum, int4Type],
       }),
     );
 
@@ -1016,6 +1154,176 @@ describe("typescript typegen", () => {
           },
         },
       } as const
+      "
+    `);
+  });
+
+  test("zero-argument function emits Record<PropertyKey, never> for Args", async () => {
+    // Ported from supabase/postgres-meta#1035: `Args: never` breaks
+    // postgrest-js, which treats `never extends { '': Row }` as a computed
+    // field and omits same-named table columns from select results, and it
+    // makes the whole Database type uninhabited for tools doing sound type
+    // math on it. `Record<PropertyKey, never>` is the accurate type for a
+    // function callable with no arguments.
+    const result = await generateTypescript(
+      buildMetadata({
+        functions: [baseFunction()],
+        types: [userStatusEnum, int4Type],
+      }),
+    );
+
+    expect(databaseSection(result)).toMatchInlineSnapshot(`
+      "export type Json =
+        | string
+        | number
+        | boolean
+        | null
+        | { [key: string]: Json | undefined }
+        | Json[]
+
+      export type Database = {
+        public: {
+          Tables: {
+            [_ in never]: never
+          }
+          Views: {
+            [_ in never]: never
+          }
+          Functions: {
+            get_status: { Args: Record<PropertyKey, never>; Returns: number }
+          }
+          Enums: {
+            user_status: "ACTIVE" | "INACTIVE"
+          }
+          CompositeTypes: {
+            [_ in never]: never
+          }
+        }
+      }
+      "
+    `);
+  });
+
+  test("views emit Insert and Update independently based on trigger-aware writability", async () => {
+    // Ported from supabase/postgres-meta#1062 (improved): views made writable
+    // by INSTEAD OF triggers get Insert/Update types even though they are not
+    // auto-updatable, and the two are gated independently so a view with only
+    // an INSTEAD OF INSERT trigger gets only an Insert type.
+    const viewColumn = (
+      tableId: number,
+      view: string,
+      overrides: Parameters<typeof baseColumn>[0] = {},
+    ) =>
+      baseColumn({
+        table_id: tableId,
+        table: view,
+        name: "id",
+        format: "int8",
+        is_nullable: true,
+        ...overrides,
+      });
+    const result = await generateTypescript(
+      buildMetadata({
+        views: [
+          baseView({
+            id: 1,
+            name: "insert_only_view",
+            is_insert_enabled: true,
+          }),
+          baseView({
+            id: 2,
+            name: "update_only_view",
+            is_update_enabled: true,
+          }),
+          baseView({
+            id: 3,
+            name: "auto_updatable_view",
+            is_updatable: true,
+            is_insert_enabled: true,
+            is_update_enabled: true,
+          }),
+          baseView({ id: 4, name: "read_only_view" }),
+        ],
+        columns: [
+          viewColumn(1, "insert_only_view"),
+          viewColumn(1, "insert_only_view", {
+            name: "derived",
+            format: "text",
+            is_updatable: false,
+            ordinal_position: 2,
+          }),
+          viewColumn(2, "update_only_view"),
+          viewColumn(3, "auto_updatable_view"),
+          viewColumn(4, "read_only_view"),
+        ],
+      }),
+    );
+
+    expect(databaseSection(result)).toMatchInlineSnapshot(`
+      "export type Json =
+        | string
+        | number
+        | boolean
+        | null
+        | { [key: string]: Json | undefined }
+        | Json[]
+
+      export type Database = {
+        public: {
+          Tables: {
+            [_ in never]: never
+          }
+          Views: {
+            auto_updatable_view: {
+              Row: {
+                id: number | null
+              }
+              Insert: {
+                id?: number | null
+              }
+              Update: {
+                id?: number | null
+              }
+              Relationships: []
+            }
+            insert_only_view: {
+              Row: {
+                derived: string | null
+                id: number | null
+              }
+              Insert: {
+                derived?: never
+                id?: number | null
+              }
+              Relationships: []
+            }
+            read_only_view: {
+              Row: {
+                id: number | null
+              }
+              Relationships: []
+            }
+            update_only_view: {
+              Row: {
+                id: number | null
+              }
+              Update: {
+                id?: number | null
+              }
+              Relationships: []
+            }
+          }
+          Functions: {
+            [_ in never]: never
+          }
+          Enums: {
+            user_status: "ACTIVE" | "INACTIVE"
+          }
+          CompositeTypes: {
+            [_ in never]: never
+          }
+        }
+      }
       "
     `);
   });
