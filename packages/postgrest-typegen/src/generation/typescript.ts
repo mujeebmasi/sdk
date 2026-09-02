@@ -698,13 +698,14 @@ export const generateTypescript = async (
    */
   const isComputedFieldOf = (
     fn: PostgresFunction,
+    inArgs: PostgresFunction["args"],
     relation: { id: number; name: string },
   ) => {
-    const inArgs = fn.args.filter(({ mode }) => mode === "in");
     if (inArgs.length === 1) {
-      const argType = typesById.get(inArgs[0]!.type_id);
-      // `type_relation_id` is the composite type's backing relation, so it
+      // `relationTypeByIds` is already "types backed by a relation", so a hit
       // identifies the relation regardless of how the argument was spelled.
+      // A `variadic` argument is an array type and never appears here.
+      const argType = relationTypeByIds.get(inArgs[0]!.type_id);
       if (argType) {
         return argType.type_relation_id === relation.id;
       }
@@ -754,7 +755,9 @@ export type Database = {
                         ),
                       ),
                       ...schemaFunctions
-                        .filter(({ fn }) => isComputedFieldOf(fn, table))
+                        .filter(({ fn, inArgs }) =>
+                          isComputedFieldOf(fn, inArgs, table),
+                        )
                         .map(({ fn }) => {
                           return `${JSON.stringify(fn.name)}: ${generateNullableUnionTsType(
                             getFunctionReturnType(schema, fn),
@@ -841,7 +844,9 @@ export type Database = {
                         ),
                       ),
                       ...schemaFunctions
-                        .filter(({ fn }) => isComputedFieldOf(fn, view))
+                        .filter(({ fn, inArgs }) =>
+                          isComputedFieldOf(fn, inArgs, view),
+                        )
                         .map(
                           ({ fn }) =>
                             `${JSON.stringify(fn.name)}: ${generateNullableUnionTsType(

@@ -1227,7 +1227,23 @@ describe("typescript typegen", () => {
       // The table's own composite type points back at the table's oid.
       type_relation_id: 1,
     };
-    const metadata = (argName: string) =>
+    // A variadic argument arrives as the array type, which is backed by no
+    // relation and so must never be taken for a computed field.
+    const categoryArrayType: PostgresType = {
+      id: 501,
+      name: "_category",
+      schema: "public",
+      format: "category[]",
+      enums: [],
+      attributes: [],
+      comment: null,
+      type_relation_id: null,
+    };
+    const metadata = (
+      argName: string,
+      mode: "in" | "inout" | "variadic" = "in",
+      typeId = 500,
+    ) =>
       buildMetadata({
         tables: [baseTable({ id: 1, name: "category" })],
         columns: [
@@ -1242,7 +1258,7 @@ describe("typescript typegen", () => {
           baseFunction({
             name: "name_translated",
             args: [
-              { mode: "in", name: argName, type_id: 500, has_default: false },
+              { mode, name: argName, type_id: typeId, has_default: false },
             ],
             argument_types: argName ? `${argName} category` : "category",
             identity_argument_types: "category",
@@ -1250,7 +1266,7 @@ describe("typescript typegen", () => {
             return_type: "text",
           }),
         ],
-        types: [userStatusEnum, textType, categoryRowType],
+        types: [userStatusEnum, textType, categoryRowType, categoryArrayType],
       });
 
     const named = await generateTypescript(metadata("category"));
@@ -1259,6 +1275,17 @@ describe("typescript typegen", () => {
     // The unnamed spelling already worked; keep it working.
     const unnamed = await generateTypescript(metadata(""));
     expect(unnamed).toContain("name_translated: string | null");
+
+    // `INOUT` is a valid PostgREST computed field and counts as an input arg
+    // everywhere else in this generator, so it belongs in `Row` too.
+    const inout = await generateTypescript(metadata("category", "inout"));
+    expect(inout).toContain("name_translated: string | null");
+
+    // A variadic argument is an array of the row type, not the row type.
+    const variadic = await generateTypescript(
+      metadata("category", "variadic", 501),
+    );
+    expect(variadic).not.toContain("name_translated: string | null");
   });
 
   test("views emit Insert and Update independently based on trigger-aware writability", async () => {
