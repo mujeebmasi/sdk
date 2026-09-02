@@ -99,6 +99,7 @@ export type Database = {
           id: number
           name: string | null
           status: Database["public"]["Enums"]["user_status"] | null
+          foreign_table_label: string | null
         }
         Insert: {
           id: number
@@ -658,6 +659,7 @@ export type Database = {
         }
         Returns: string
       }
+      foreign_table_label: { Args: { ft: unknown }; Returns: string }
       function_returning_row: {
         Args: Record<PropertyKey, never>
         Returns: {
