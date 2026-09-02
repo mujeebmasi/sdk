@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { generateTypescript as rawGenerateTypescript } from "../../src/generation/typescript.ts";
 import { sortGeneratorMetadata } from "../../src/sort.ts";
+import type { PostgresType } from "../../src/types.ts";
 import {
   baseColumn,
   baseFunction,
@@ -10,6 +11,7 @@ import {
   baseView,
   buildMetadata,
   int4Type,
+  textType,
   userStatusEnum,
 } from "./fixtures.ts";
 
@@ -1202,6 +1204,61 @@ describe("typescript typegen", () => {
       }
       "
     `);
+  });
+
+  test("computed field lands in Row when its parameter is named", async () => {
+    // Ported from supabase/postgres-meta#1034: computed fields were matched by
+    // comparing `argument_types` — `pg_get_function_arguments()` — against the
+    // table name. That string carries the parameter name when the parameter has
+    // one, so `name_translated(category category)` produced `category category`
+    // and never matched, dropping the field from `Row` and making
+    // `.select("name_translated")` a SelectQueryError. The unnamed
+    // `name_translated(category)` matched and worked, which is why this
+    // reproduced for some schemas and not others. Matching on the argument's
+    // composite type covers both spellings.
+    const categoryRowType: PostgresType = {
+      id: 500,
+      name: "category",
+      schema: "public",
+      format: "category",
+      enums: [],
+      attributes: [],
+      comment: null,
+      // The table's own composite type points back at the table's oid.
+      type_relation_id: 1,
+    };
+    const metadata = (argName: string) =>
+      buildMetadata({
+        tables: [baseTable({ id: 1, name: "category" })],
+        columns: [
+          baseColumn({
+            table_id: 1,
+            name: "name",
+            format: "text",
+            ordinal_position: 1,
+          }),
+        ],
+        functions: [
+          baseFunction({
+            name: "name_translated",
+            args: [
+              { mode: "in", name: argName, type_id: 500, has_default: false },
+            ],
+            argument_types: argName ? `${argName} category` : "category",
+            identity_argument_types: "category",
+            return_type_id: 25,
+            return_type: "text",
+          }),
+        ],
+        types: [userStatusEnum, textType, categoryRowType],
+      });
+
+    const named = await generateTypescript(metadata("category"));
+    expect(named).toContain("name_translated: string | null");
+
+    // The unnamed spelling already worked; keep it working.
+    const unnamed = await generateTypescript(metadata(""));
+    expect(unnamed).toContain("name_translated: string | null");
   });
 
   test("views emit Insert and Update independently based on trigger-aware writability", async () => {

@@ -679,6 +679,42 @@ export const generateTypescript = async (
     )}`;
   }
 
+  /**
+   * Is `fn` a PostgREST computed field on `relation` (a table or view)?
+   *
+   * A computed field is a function taking a single argument of the relation's
+   * own composite type, so it is selectable as if it were a column and belongs
+   * in `Row`.
+   *
+   * Matching on the argument's type OID rather than on `argument_types` is what
+   * makes named parameters work. `argument_types` is
+   * `pg_get_function_arguments()`, which renders the parameter *name* when the
+   * parameter has one — `category category` rather than `category` — and
+   * schema-qualifies the type when it is not visible in `search_path`. Both
+   * forms failed a bare string comparison against the relation name, so
+   * `create function name_translated(category category)` silently lost its
+   * computed field while the unnamed `name_translated(category)` kept it.
+   * See supabase/postgres-meta#1034.
+   */
+  const isComputedFieldOf = (
+    fn: PostgresFunction,
+    relation: { id: number; name: string },
+  ) => {
+    const inArgs = fn.args.filter(({ mode }) => mode === "in");
+    if (inArgs.length === 1) {
+      const argType = typesById.get(inArgs[0]!.type_id);
+      // `type_relation_id` is the composite type's backing relation, so it
+      // identifies the relation regardless of how the argument was spelled.
+      if (argType) {
+        return argType.type_relation_id === relation.id;
+      }
+    }
+    // Fall back to the historical comparison when the argument's type is not in
+    // the metadata (callers may pass a reduced `types` list), so a computed
+    // field that resolved before keeps resolving.
+    return fn.argument_types === relation.name;
+  };
+
   let output = `
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[]
 
@@ -718,7 +754,7 @@ export type Database = {
                         ),
                       ),
                       ...schemaFunctions
-                        .filter(({ fn }) => fn.argument_types === table.name)
+                        .filter(({ fn }) => isComputedFieldOf(fn, table))
                         .map(({ fn }) => {
                           return `${JSON.stringify(fn.name)}: ${generateNullableUnionTsType(
                             getFunctionReturnType(schema, fn),
@@ -805,7 +841,7 @@ export type Database = {
                         ),
                       ),
                       ...schemaFunctions
-                        .filter(({ fn }) => fn.argument_types === view.name)
+                        .filter(({ fn }) => isComputedFieldOf(fn, view))
                         .map(
                           ({ fn }) =>
                             `${JSON.stringify(fn.name)}: ${generateNullableUnionTsType(
